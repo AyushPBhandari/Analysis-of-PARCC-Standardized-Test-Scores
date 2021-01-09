@@ -1,0 +1,150 @@
+---
+title: "Modeling"
+author: "Adam Ribaudo"
+date: "November 13, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Variables of interest
+
+* Truancy
+  + Safe_Truancy_Current_Year
+  + Pattern found after transforming respone variable with sqrt()
+* Teacher Retention
+  + Perf_Teachers_Current_Year
+  + no pattern found
+* Suspensions
+  + suspensions
+  + strong pattern after converting it to binary yes/no for 'high # of suspensions'
+* Budget per student 
+  + student_spending
+  + no real pattern
+* Teacher Salary
+  + Don't have this per school 
+  + $84,765 average 2017-2018 
+* Teacher / Student Ratio
+  + 11.49 according to Google
+  + 4012 teachers 2017-2018
+  + Tweeted at them on 11/11
+* After/Before School Care
+  + Any_Care
+  + Strong correlation with test scores
+  
+# Modeling
+```{r}
+dc_part <- resample_partition(dc, c(train = 0.5,test = 0.5))
+dc_train <- dc[dc_part$train$idx,]
+dc_test <- dc[dc_part$test$idx,]
+```
+
+## Truancy
+```{r}
+
+ggplot(dc_train) + geom_point(aes(x = Safe_Truancy_Current_Year, y = (math_proficiency)^.5))
+#TODO find a way to avoid transforming the response
+#fit0 <- lm(data=dc, math_proficiency ~ I(Safe_Truancy_Current_Year^2))
+
+ggplot(dc) + geom_point(aes(x = Safe_Truancy_Current_Year, y = sqrt(math_proficiency)))
+
+fit1 <- lm(data=dc_train,sqrt(math_proficiency) ~ Safe_Truancy_Current_Year)
+dc_train <- dc_train %>% add_residuals(fit1)
+ggplot(dc_train) + geom_point(aes(x=Safe_Truancy_Current_Year, y=resid))
+
+#TODO interpret box cot transformation
+#b <- MASS::boxcox(lm(math_proficiency + 1 ~ Safe_Truancy_Current_Year, data=dc), plotit=T)
+#summary(b)
+
+```
+
+## Teacher Retention - No Pattern
+
+```{r}
+
+fit2 <- lm(data=dc_train,sqrt(math_proficiency) ~ Safe_Truancy_Current_Year + Perf_Teachers_Current_Year)
+summary(fit2)
+```
+
+
+## Suspensions - % of students with OOS suspension
+```{r}
+ggplot(dc_train) + geom_point(aes(x=suspensions, y=resid))
+
+fit3 <- lm(data=dc_train, sqrt(math_proficiency) ~ Safe_Truancy_Current_Year + suspensions)
+summary(fit3)
+dc_train <- dc_train %>% add_residuals(fit3)
+
+ggplot(dc_train) + geom_point(aes(x=suspensions, y=resid))
+ggplot(dc_train) + geom_point(aes(x=Safe_Truancy_Current_Year, y=resid))
+#ggplot(dc) + geom_point(aes(x=sqrt(math_proficiency), y=resid)) # not sure what's going on here
+```
+
+## Student Spending - No Pattern
+```{r}
+ggplot(dc_train) + geom_point(aes(x=student_spending_scale, y=resid))
+fit4 <- lm(data=dc_train, sqrt(math_proficiency) ~ Safe_Truancy_Current_Year + high_suspensions + student_spending)
+summary(fit4)
+
+```
+
+## After/Before Care
+
+- Surprised to see that after taking out truancy and suspension, after care has negative effect on performance
+
+```{r}
+
+
+# ggplot(dc) + geom_boxplot(aes(x=Any_Care, y=resid))
+# ggplot(dc) + geom_boxplot(aes(x=Any_Care, y=math_proficiency))
+# fit5 <- lm(data=dc, sqrt(math_proficiency) ~ Safe_Truancy_Current_Year + high_suspensions + Any_Care)
+# summary(fit5)
+# 
+# ggplot(dc) + geom_boxplot(aes(x=Any_Care, y=resid^2, color=Any_Care)) + labs(x="Provides Before or After School Care", y="Residuals") + scale_y_continuous(labels = scales::percent) + theme_light() + guides(color=FALSE)
+
+```
+
+# Visualize Model
+```{r}
+#Train
+dc_train <- dc_train %>% add_residuals(fit3) %>% add_predictions(fit3)
+ggplot(dc_train) + geom_point(aes(x=pred, y=sqrt(math_proficiency)))
+dc_train_rmse <- dc_train %>% select(math_proficiency, pred, Safe_Truancy_Current_Year, suspensions) %>% na.omit()
+Metrics::rmse(dc_train_rmse$math_proficiency, dc_train_rmse$pred^2)
+summary(fit3)
+
+#Test
+fit_test <- lm(data=dc_test, sqrt(math_proficiency) ~ Safe_Truancy_Current_Year + suspensions)
+dc_test <- dc_test %>% add_residuals(fit3) %>% add_predictions(fit3)
+ggplot(dc_test) + geom_point(aes(x=pred, y=sqrt(math_proficiency)))
+dc_test_rmse <- dc_test %>% select(math_proficiency, pred, Safe_Truancy_Current_Year, suspensions) %>% na.omit()
+Metrics::rmse(dc_test_rmse$math_proficiency, dc_test_rmse$pred^2)
+summary(fit_test)
+
+
+grid <- dc_train %>% 
+  data_grid(suspensions, Safe_Truancy_Current_Year) %>% add_predictions(fit_test) %>% na.omit() %>% 
+  mutate(pred = pred^2) %>% mutate(pred_binary = pred > .309) 
+
+ggplot(grid) + geom_point(aes(x=suspensions, y=Safe_Truancy_Current_Year, color=pred_binary)) +
+  scale_y_continuous(labels = scales::percent) + scale_x_continuous(labels = scales::percent) + 
+  labs(x="Suspension Rate", y="Truancy Rate", color=">31% Math", title="Predicted Inputs to Achieve Above 31% Math Proficiency") + theme_light()
+  
+
+#ggplot(dc) + geom_point(aes(pred^2, math_proficiency))
+predict(fit3, dc)
+dc$Safe_Truancy_Current_Year[1]
+dc$suspensions[1]
+dc$pred[1]
+
+#modelr::rmse(data=dc_rmse, fit3)
+
+#TODO find a way to determine the per-unit change in math proficiency for my variables:
+#When looking here, I can see changing truancy by 1% changes math_proficiency by .7%
+#View(grid %>% filter(Safe_Truancy_Current_Year == 0))
+
+
+```
+
